@@ -1,0 +1,14 @@
+[package]
+name = "cert_check"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rustls = "0.22.4"
+rustls-pemfile = "2.1.0"
+webpki = "0.22.2"
+x509-parser = {version = "0.17.0", features = ["verify"]}
+time = "0.3.30"
+ring = "0.17.7"
+log = "0.4.20"
+env_logger = "0.11.2"

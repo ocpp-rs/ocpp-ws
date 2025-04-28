@@ -1,0 +1,5 @@
+/target
+/crate_cert/__pycache__
+/crate_cert/venv
+*.pem
+*csr

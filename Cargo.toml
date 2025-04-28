@@ -1,0 +1,5 @@
+[workspace]
+resolver = "3"
+members = [
+    "cert_check", "ws_server", "ws_client"
+]
