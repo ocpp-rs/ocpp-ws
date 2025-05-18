@@ -1,85 +1,162 @@
-cd# 证书验证与WebSocket安全通信工具
+# OCPP WebSocket Security Toolkit
 
-本项目提供了一套完整的证书生成、验证和基于WebSocket的安全通信解决方案，包含四个主要组件：
+<p align="center">
+  <img src="https://img.shields.io/badge/language-rust-orange" alt="Language">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License">
+  <img src="https://img.shields.io/badge/version-0.1.0-green" alt="Version">
+</p>
 
-- `crate_cert`: 证书生成工具，用于创建CA证书及客户端/服务器证书
-- `cert_check`: 证书验证工具，用于验证证书的有效性和信任链
-- `ws_server`: 基于WebSocket的安全服务器，实现TLS加密和双向证书认证
-- `ws_client`: 基于WebSocket的安全客户端，配合服务器实现安全通信
+[中文文档](./README_zh.md)
 
-## 快速开始
+A comprehensive toolkit for secure WebSocket communications with TLS support, specifically designed for OCPP (Open Charge Point Protocol) implementations.
 
-### 1. 生成证书
+## Components
 
-首先需要生成必要的证书：
+This project consists of the following main components:
+
+- **ws-rs**: Core WebSocket library with TLS support
+- **crate_cert**: Certificate generation tool
+- **cert_check**: Certificate validation tool
+- **ws_server**: Example WebSocket server implementation
+- **ws_client**: Example WebSocket client implementation
+
+## Quick Start
+
+### 1. Generate Certificates
+
+First, generate the necessary certificates:
 
 ```bash
 cd crate_cert && python main.py
 ```
 
-注意：需要配置Python环境并安装依赖（`pip install -r requirements.txt`）
+Note: Python environment and dependencies are required (`pip install -r requirements.txt`)
 
-### 2. 验证证书
+### 2. Verify Certificates
 
-可以使用证书验证工具检查证书的有效性：
+You can use the certificate validation tool to check certificate validity:
 
 ```bash
 RUST_LOG=info cargo run -p cert_check
 ```
 
-### 3. 启动WebSocket服务器
+### 3. Start WebSocket Server
 
 ```bash
 RUST_LOG=info cargo run -p ws_server
 ```
 
-服务器将在127.0.0.2:8080上启动，等待客户端连接。
+The server will start on 127.0.0.2:8080, waiting for client connections.
 
-### 4. 运行WebSocket客户端
+### 4. Run WebSocket Client
 
-在另一个终端中：
+In another terminal:
 
 ```bash
 RUST_LOG=info cargo run -p ws_client
 ```
 
-## 日志系统
+## Logging System
 
-项目使用`log`和`env_logger`库实现日志功能。通过设置环境变量`RUST_LOG`控制日志级别：
+The project uses the `log` and `env_logger` libraries for logging. Control log levels via the `RUST_LOG` environment variable:
 
-- `error`: 仅显示错误信息
-- `warn`: 显示警告和错误
-- `info`: 显示一般信息（默认）
-- `debug`: 显示调试信息
-- `trace`: 显示所有日志
+- `error`: Only errors
+- `warn`: Warnings and errors
+- `info`: General information (default)
+- `debug`: Debug information
+- `trace`: All logs
 
-设置方法：
+Setting method:
 - Linux/macOS: `export RUST_LOG=debug`
 - PowerShell: `$env:RUST_LOG="debug"`
 - CMD: `set RUST_LOG=debug`
 
-## 证书文件
+## Certificate Files
 
-运行WebSocket服务器和客户端前，确保已生成以下证书文件：
-- `certs/ca_cert.pem`: CA证书
-- `certs/a_cert.pem`: 客户端证书
-- `certs/a_key.pem`: 客户端私钥
-- `certs/b_cert.pem`: 服务器证书
-- `certs/b_key.pem`: 服务器私钥
+Before running the WebSocket server and client, ensure you have generated the following certificate files:
 
-## 安全特性
+- `certs/ca_cert.pem`: CA certificate
+- `certs/a_cert.pem`: Client certificate
+- `certs/a_key.pem`: Client private key
+- `certs/b_cert.pem`: Server certificate
+- `certs/b_key.pem`: Server private key
 
-- TLS加密通信保障数据传输安全
-- 双向证书认证(mTLS)确保双方身份可信
-- 加密通信防止中间人攻击
-- 完整的证书验证机制确保只有可信实体能建立连接
+## Security Features
 
-## 注意事项
+- TLS encrypted communication ensures data transmission security
+- Mutual certificate authentication (mTLS) ensures both parties' identity is trusted
+- Encrypted communication prevents man-in-the-middle attacks
+- Complete certificate validation mechanism ensures only trusted entities can establish connections
 
-1. 如需添加127.0.0.2地址：
+## Notes
+
+1. To add the 127.0.0.2 address:
    - Windows: `netsh interface ipv4 add address "Loopback" 127.0.0.2 255.0.0.0`
    - Linux: `sudo ip addr add 127.0.0.2/8 dev lo`
 
-2. 如需在不同机器上运行，请相应修改IP地址配置和证书设置
+2. If you need to run on different machines, please modify the IP address configuration and certificate settings accordingly.
 
-3. 项目使用Rust 2024 edition，请确保Rust工具链为最新版本
+3. The project uses Rust 2024 edition, please ensure your Rust toolchain is up to date.
+
+## Using the ws-rs Library
+
+The core functionality is available as a library. Include it in your project:
+
+```toml
+[dependencies]
+ws-rs = { version = "0.1.0", features = ["client", "server"] }
+```
+
+### Server Example
+
+```rust
+use ws_rs::server::{WebSocketServer, ServerConfig};
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = ServerConfig {
+        address: "127.0.0.2:8080".to_string(),
+        cert_path: PathBuf::from("certs/b_cert.pem"),
+        key_path: PathBuf::from("certs/b_key.pem"),
+        ca_cert_path: PathBuf::from("certs/ca_cert.pem"),
+    };
+    
+    let server = WebSocketServer::new(config);
+    server.run().await?;
+    
+    Ok(())
+}
+```
+
+### Client Example
+
+```rust
+use ws_rs::client::{WebSocketClient, ClientConfig};
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = ClientConfig {
+        url: "wss://127.0.0.2:8080".to_string(),
+        cert_path: PathBuf::from("certs/a_cert.pem"),
+        key_path: PathBuf::from("certs/a_key.pem"),
+        ca_cert_path: PathBuf::from("certs/ca_cert.pem"),
+    };
+    
+    let client = WebSocketClient::new(config);
+    let connection = client.connect().await?;
+    
+    // Use the connection...
+    
+    Ok(())
+}
+```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
