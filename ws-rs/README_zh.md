@@ -8,7 +8,7 @@
 
 [English Documentation](./README.md)
 
-一个基于Rust构建的安全WebSocket库，专为OCPP通信提供TLS支持。
+一个基于Rust构建的安全WebSocket库，为通信提供TLS支持。
 
 ## 特性
 
@@ -38,7 +38,7 @@ use std::path::PathBuf;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
     env_logger::init();
-    
+
     // 配置服务器
     let config = ServerConfig {
         address: "127.0.0.2:8080".to_string(),
@@ -46,11 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key_path: PathBuf::from("certs/b_key.pem"),
         ca_cert_path: PathBuf::from("certs/ca_cert.pem"),
     };
-    
+
     // 创建并运行服务器
     let server = WebSocketServer::new(config);
     server.run().await?;
-    
+
     Ok(())
 }
 ```
@@ -65,7 +65,7 @@ use std::path::PathBuf;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志
     env_logger::init();
-    
+
     // 配置客户端
     let config = ClientConfig {
         url: "wss://127.0.0.2:8080".to_string(),
@@ -73,14 +73,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key_path: PathBuf::from("certs/a_key.pem"),
         ca_cert_path: PathBuf::from("certs/ca_cert.pem"),
     };
-    
+
     // 连接到服务器
     let client = WebSocketClient::new(config);
     let connection = client.connect().await?;
-    
+
     // 使用连接
     // ...
-    
+
     Ok(())
 }
 ```

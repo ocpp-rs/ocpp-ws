@@ -8,7 +8,7 @@
 
 [中文文档](./README_zh.md)
 
-A secure WebSocket library for OCPP communications with TLS support, built in Rust.
+A secure WebSocket library for communications with TLS support, built in Rust.
 
 ## Features
 
@@ -38,7 +38,7 @@ use std::path::PathBuf;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
-    
+
     // Configure server
     let config = ServerConfig {
         address: "127.0.0.2:8080".to_string(),
@@ -46,11 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key_path: PathBuf::from("certs/b_key.pem"),
         ca_cert_path: PathBuf::from("certs/ca_cert.pem"),
     };
-    
+
     // Create and run server
     let server = WebSocketServer::new(config);
     server.run().await?;
-    
+
     Ok(())
 }
 ```
@@ -65,7 +65,7 @@ use std::path::PathBuf;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
-    
+
     // Configure client
     let config = ClientConfig {
         url: "wss://127.0.0.2:8080".to_string(),
@@ -73,14 +73,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key_path: PathBuf::from("certs/a_key.pem"),
         ca_cert_path: PathBuf::from("certs/ca_cert.pem"),
     };
-    
+
     // Connect to server
     let client = WebSocketClient::new(config);
     let connection = client.connect().await?;
-    
+
     // Use the connection
     // ...
-    
+
     Ok(())
 }
 ```

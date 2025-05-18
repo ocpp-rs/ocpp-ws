@@ -1,6 +1,6 @@
 [package]
 name = "ws-rs"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["OCPP-rs Team"]
 description = "WebSocket library for OCPP communications with TLS support"
