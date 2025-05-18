@@ -1,133 +1,115 @@
-use std::fs::File;
-use std::io::BufReader;
-use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
-
-use futures_util::{SinkExt, StreamExt};
 use log::{error, info};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::{ClientConfig, RootCertStore};
 use tokio::time::sleep;
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async_tls_with_config, Connector};
-use url::Url;
+use ws_lib::client::{WebSocketClient, MessageType};
 
-// 加载证书和私钥
-fn load_certs(path: &Path) -> Vec<CertificateDer<'static>> {
-    let file = File::open(path).expect("无法打开证书文件");
-    let mut reader = BufReader::new(file);
-    rustls_pemfile::certs(&mut reader)
-        .map(|result| result.expect("无法解析证书"))
-        .collect()
-}
-
-// 加载私钥
-fn load_private_key(path: &Path) -> PrivateKeyDer<'static> {
-    let file = File::open(path).expect("无法打开私钥文件");
-    let mut reader = BufReader::new(file);
-    let mut keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .expect("无法解析私钥");
-    if keys.is_empty() {
-        panic!("没有找到私钥");
-    }
-    PrivateKeyDer::Pkcs8(keys.remove(0))
-}
-
+/// WebSocket client application that demonstrates the optimized client library features
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 初始化日志
+    // Initialize logging
     env_logger::init();
 
-    // 服务器地址
-    let server_url = Url::parse("wss://127.0.0.1:9000")?;
+    // Create WebSocket client with optimized configuration
+    let mut client = WebSocketClient::builder()
+        .with_connection_timeout(Duration::from_secs(10))  // Set connection timeout
+        .with_auto_reconnect(true)                        // Enable auto-reconnection
+        .with_max_reconnect_attempts(3)                   // Configure reconnection attempts
+        .with_reconnect_delay(Duration::from_secs(2))     // Set delay between reconnections
+        .with_channel_capacity(200)                       // Optimize channel buffer size
+        .build();
 
-    // 证书目录
-    let cert_dir = Path::new("./crate_cert");
-
-    // 加载客户端证书和私钥
-    let client_cert = cert_dir.join("b_cert.pem");
-    let client_key = cert_dir.join("b_key.pem");
-
-    // 加载CA证书
-    let ca_cert = cert_dir.join("ca_cert.pem");
-
-    info!("客户端证书: {:?}", client_cert);
-    info!("客户端私钥: {:?}", client_key);
-    info!("CA证书: {:?}", ca_cert);
-
-    info!("加载证书和私钥...");
-    let client_certs = load_certs(&client_cert);
-    let client_key = load_private_key(&client_key);
-    let ca_certs = load_certs(&ca_cert);
-
-    // 创建TLS配置
-    let mut root_store = RootCertStore::empty();
-    for cert in ca_certs {
-        root_store.add(cert).expect("无法添加CA证书");
-    }
-
-    let client_config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_client_auth_cert(client_certs, client_key)
-        .expect("无法创建客户端配置");
-
-    // 创建TLS连接器
-    let tls_config = Arc::new(client_config);
-    let connector = Connector::Rustls(tls_config);
-
-    // 连接到WebSocket服务器
-    info!("连接到WebSocket服务器: {}", server_url);
-    let (ws_stream, _) = connect_async_tls_with_config(server_url, None, false, Some(connector)).await?;
-    info!("已连接到WebSocket服务器");
-
-    // 将连接分为发送和接收部分
-    let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-
-    // 发送消息
-    let message = "你好，WebSocket服务器！";
-    info!("发送消息: {}", message);
-    ws_sender.send(Message::Text(message.to_string())).await?;
-
-    // 接收消息
-    if let Some(msg) = ws_receiver.next().await {
-        match msg {
-            Ok(msg) => {
-                info!("收到服务器响应: {}", msg);
-            }
-            Err(e) => {
-                error!("接收消息错误: {}", e);
-            }
+    // Connect to WebSocket server with proper error handling
+    info!("连接到WebSocket服务器...");
+    match client.connect(
+        "wss://127.0.0.1:9000",
+        "./crate_cert",
+        "b_cert.pem",
+        "b_key.pem",
+        "ca_cert.pem",
+    ).await {
+        Ok(_) => info!("已连接到WebSocket服务器"),
+        Err(e) => {
+            error!("连接失败: {}", e);
+            return Err(e);
         }
     }
 
-    // 发送更多消息
+    // Verify connection is active
+    if !client.is_connected() {
+        error!("连接状态检查失败");
+        return Err("Connection state verification failed".into());
+    }
+
+    // Send a text message
+    let message = "你好，WebSocket服务器！";
+    info!("发送消息: {}", message);
+    client.send_text(message.to_string()).await?;
+
+    // Receive message with timeout
+    match client.receive_message_timeout(Duration::from_secs(5)).await {
+        Ok(Some(response)) => match response {
+            MessageType::Text(text) => info!("收到服务器响应: {}", text),
+            MessageType::Binary(data) => info!("收到服务器二进制响应: {} 字节", data.len()),
+        },
+        Ok(None) => {
+            error!("未连接到服务器");
+            return Err("Not connected to server".into());
+        },
+        Err(_) => {
+            error!("接收超时");
+            // Continue despite timeout
+        }
+    }
+
+    // Send multiple messages
     for i in 1..=5 {
+        // Create test message
         let message = format!("消息 #{}", i);
         info!("发送消息: {}", message);
-        ws_sender.send(Message::Text(message)).await?;
-
-        // 等待响应
-        if let Some(msg) = ws_receiver.next().await {
-            match msg {
-                Ok(msg) => {
-                    info!("收到服务器响应: {}", msg);
+        
+        // Send the message
+        if let Err(e) = client.send_text(message).await {
+            error!("发送失败: {}", e);
+            
+            // Check connection and attempt reconnect if needed
+            if !client.check_connection().await {
+                info!("连接丢失，尝试重连");
+                if let Err(e) = client.reconnect().await {
+                    error!("重连失败: {}", e);
+                    break;
                 }
-                Err(e) => {
-                    error!("接收消息错误: {}", e);
+                info!("重连成功");
+            }
+            continue;
+        }
+
+        // Receive response with timeout
+        match client.receive_message_timeout(Duration::from_secs(3)).await {
+            Ok(Some(response)) => match response {
+                MessageType::Text(text) => info!("收到服务器响应: {}", text),
+                MessageType::Binary(data) => info!("收到服务器二进制响应: {} 字节", data.len()),
+            },
+            Ok(None) => {
+                error!("未连接到服务器");
+                break;
+            },
+            Err(_) => {
+                error!("接收超时");
+                // Send a ping to check connection
+                if let Err(e) = client.ping().await {
+                    error!("Ping失败: {}", e);
                     break;
                 }
             }
         }
 
-        // 等待一秒
+        // Wait between messages
         sleep(Duration::from_secs(1)).await;
     }
 
-    // 关闭连接
+    // Gracefully close the connection
     info!("关闭WebSocket连接");
-    ws_sender.close().await?;
+    client.close().await;
 
     Ok(())
 }
