@@ -1359,17 +1359,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea2f10b9bb0928dfb1b42b65e1f9e36f7f54dbdf08457afefb38afcdec4fa2bb"
 
 [[package]]
-name = "ws_client"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "log",
- "tokio",
- "ws_lib",
-]
-
-[[package]]
-name = "ws_lib"
+name = "ws-rs"
 version = "0.1.0"
 dependencies = [
  "base64",
@@ -1385,6 +1375,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ws_client"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "log",
+ "tokio",
+ "ws-rs",
+]
+
+[[package]]
 name = "ws_server"
 version = "0.1.0"
 dependencies = [
@@ -1397,7 +1397,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
- "ws_lib",
+ "ws-rs",
 ]
 
 [[package]]

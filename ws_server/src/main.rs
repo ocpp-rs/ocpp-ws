@@ -1,7 +1,7 @@
 use log::{error, info};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use ws_lib::server::{ClientId, ServerHandler, WsMessage, WsServer, WsServerConfig};
+use ws_rs::server::{ClientId, ServerHandler, WsMessage, WsServer, WsServerConfig};
 
 #[derive(Default)]
 struct MyWsHandler;

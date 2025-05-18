@@ -1,5 +1,3 @@
 [workspace]
 resolver = "3"
-members = [
-    "cert_check", "ws_server", "ws_client"
-, "ws_lib"]
+members = ["cert_check", "ws_server", "ws_client", "ws-rs"]

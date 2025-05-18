@@ -6,15 +6,15 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use log::{error, info, warn};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::RootCertStore;
-use tokio::sync::{mpsc, Mutex};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use std::collections::HashMap;
+use tokio::sync::{Mutex, mpsc};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async_tls_with_config, Connector};
+use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 use url::Url;
-use tokio::task::JoinHandle;
-use std::collections::HashMap;
 
 /// WebSocket client structure for handling secure WebSocket connections.
 ///
@@ -29,8 +29,8 @@ use std::collections::HashMap;
 /// # Example
 ///
 /// ```ignore
-/// use ws_lib::client::WebSocketClient;
-/// use ws_lib::client::MessageType;
+/// use ws_rs::client::WebSocketClient;
+/// use ws_rs::client::MessageType;
 /// use std::time::Duration;
 ///
 /// #[tokio::main]
@@ -214,8 +214,7 @@ impl WebSocketClient {
     fn load_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
-        let certs = rustls_pemfile::certs(&mut reader)
-            .collect::<Result<Vec<_>, _>>()?;
+        let certs = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
 
         if certs.is_empty() {
             return Err("No certificates found in file".into());
@@ -240,8 +239,8 @@ impl WebSocketClient {
     fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, Box<dyn std::error::Error>> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
-        let keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
-            .collect::<Result<Vec<_>, _>>()?;
+        let keys =
+            rustls_pemfile::pkcs8_private_keys(&mut reader).collect::<Result<Vec<_>, _>>()?;
 
         if keys.is_empty() {
             return Err("No private key found in file".into());
@@ -352,22 +351,27 @@ impl WebSocketClient {
         let mut current_attempt = 0;
         loop {
             // Perform the connection attempt
-            let result = self.connect_internal(
-                &server_url,
-                cert_dir,
-                client_cert_file,
-                client_key_file,
-                ca_cert_file,
-                current_attempt
-            ).await;
-            
+            let result = self
+                .connect_internal(
+                    &server_url,
+                    cert_dir,
+                    client_cert_file,
+                    client_key_file,
+                    ca_cert_file,
+                    current_attempt,
+                )
+                .await;
+
             // Check if we need to retry based on the special error
             match result {
                 Err(e) => {
                     let err_str = e.to_string();
                     if err_str.starts_with("__RETRY_CONNECTION_") {
                         // Parse the attempt number
-                        if let Ok(next_attempt) = err_str.trim_start_matches("__RETRY_CONNECTION_").parse::<u32>() {
+                        if let Ok(next_attempt) = err_str
+                            .trim_start_matches("__RETRY_CONNECTION_")
+                            .parse::<u32>()
+                        {
                             current_attempt = next_attempt;
                             // Wait before retrying
                             tokio::time::sleep(self.config.reconnect_delay).await;
@@ -375,8 +379,8 @@ impl WebSocketClient {
                         }
                     }
                     return Err(e);
-                },
-                Ok(_) => return Ok(())
+                }
+                Ok(_) => return Ok(()),
             }
         }
     }
@@ -405,7 +409,8 @@ impl WebSocketClient {
         info!("CA certificate: {:?}", ca_cert);
 
         // Create a cache key for the TLS configuration
-        let cache_key = format!("{}:{}:{}:{}",
+        let cache_key = format!(
+            "{}:{}:{}:{}",
             server_url,
             client_cert.display(),
             client_key.display(),
@@ -413,7 +418,10 @@ impl WebSocketClient {
         );
 
         info!("Loading certificates and keys...");
-        let tls_config = match self.create_tls_config(&cache_key, &client_cert, &client_key, &ca_cert).await {
+        let tls_config = match self
+            .create_tls_config(&cache_key, &client_cert, &client_key, &ca_cert)
+            .await
+        {
             Ok(config) => config,
             Err(e) => {
                 error!("Failed to create TLS configuration: {}", e);
@@ -427,7 +435,8 @@ impl WebSocketClient {
         // Connect to WebSocket server with timeout
         info!("Connecting to WebSocket server: {}", server_url);
         // Use timeout for connection attempt
-        let connection_attempt = connect_async_tls_with_config(server_url.clone(), None, false, Some(connector));
+        let connection_attempt =
+            connect_async_tls_with_config(server_url.clone(), None, false, Some(connector));
         let ws_stream = match timeout(self.config.connection_timeout, connection_attempt).await {
             Ok(result) => {
                 match result {
@@ -436,8 +445,11 @@ impl WebSocketClient {
                         error!("Connection error: {}", e);
 
                         // Handle reconnection if enabled
-                        if self.config.auto_reconnect && attempt < self.config.max_reconnect_attempts {
-                            warn!("Reconnection attempt {}/{} in {}s",
+                        if self.config.auto_reconnect
+                            && attempt < self.config.max_reconnect_attempts
+                        {
+                            warn!(
+                                "Reconnection attempt {}/{} in {}s",
                                 attempt + 1,
                                 self.config.max_reconnect_attempts,
                                 self.config.reconnect_delay.as_secs()
@@ -454,14 +466,18 @@ impl WebSocketClient {
                         return Err(e.into());
                     }
                 }
-            },
+            }
             Err(_) => {
-                let err = format!("Connection timeout after {:?}", self.config.connection_timeout);
+                let err = format!(
+                    "Connection timeout after {:?}",
+                    self.config.connection_timeout
+                );
                 error!("{}", err);
 
                 // Handle reconnection if enabled
                 if self.config.auto_reconnect && attempt < self.config.max_reconnect_attempts {
-                    warn!("Reconnection attempt {}/{} in {}s",
+                    warn!(
+                        "Reconnection attempt {}/{} in {}s",
                         attempt + 1,
                         self.config.max_reconnect_attempts,
                         self.config.reconnect_delay.as_secs()
@@ -517,19 +533,19 @@ impl WebSocketClient {
                             Message::Text(text) => {
                                 info!("Received text message: {} bytes", text.len());
                                 MessageType::Text(text)
-                            },
+                            }
                             Message::Binary(data) => {
                                 info!("Received binary message: {} bytes", data.len());
                                 MessageType::Binary(data)
-                            },
+                            }
                             Message::Ping(_) | Message::Pong(_) => {
                                 // Handle ping/pong internally
                                 continue;
-                            },
+                            }
                             Message::Close(_) => {
                                 info!("Received close frame");
                                 break;
-                            },
+                            }
                             // Handle other message types if needed
                             _ => continue,
                         };
@@ -581,7 +597,8 @@ impl WebSocketClient {
             }
 
             // Connect using saved parameters
-            self.connect(&url, &cert_dir, &client_cert, &client_key, &ca_cert).await
+            self.connect(&url, &cert_dir, &client_cert, &client_key, &ca_cert)
+                .await
         } else {
             Err("No previous connection parameters available for reconnection".into())
         }
@@ -600,7 +617,10 @@ impl WebSocketClient {
     /// # Errors
     ///
     /// Returns an error if the client is not connected or if the message cannot be sent.
-    pub async fn send_message(&self, message: MessageType) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn send_message(
+        &self,
+        message: MessageType,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(sender) = &self.sender {
             sender.send(message).await?;
             Ok(())
@@ -671,7 +691,7 @@ impl WebSocketClient {
     /// * `Err(_)` - Timeout occurred
     pub async fn receive_message_timeout(
         &mut self,
-        timeout_duration: Duration
+        timeout_duration: Duration,
     ) -> Result<Option<MessageType>, tokio::time::error::Elapsed> {
         if let Some(receiver) = &mut self.receiver {
             timeout(timeout_duration, receiver.recv()).await
@@ -750,7 +770,7 @@ impl WebSocketClient {
 
         match self.ping().await {
             Ok(_) => true,
-            Err(_) => false
+            Err(_) => false,
         }
     }
 

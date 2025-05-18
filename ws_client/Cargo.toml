@@ -7,4 +7,4 @@ edition = "2024"
 tokio = { version = "1.36.0", features = ["full"] }
 log = "0.4.20"
 env_logger = "0.11.2"
-ws_lib = { path = "../ws_lib", features = ["client"] }
+ws-rs = { path = "../ws-rs", features = ["client"] }

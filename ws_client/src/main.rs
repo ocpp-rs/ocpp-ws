@@ -1,7 +1,7 @@
 use log::{error, info};
 use std::time::Duration;
 use tokio::time::sleep;
-use ws_lib::client::{MessageType, WebSocketClient};
+use ws_rs::client::{MessageType, WebSocketClient};
 
 /// WebSocket client application that demonstrates the optimized client library features
 #[tokio::main]
