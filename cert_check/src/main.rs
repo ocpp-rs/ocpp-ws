@@ -1,20 +1,20 @@
+use env_logger;
+use log::{debug, error, info};
+use ring::digest;
 use rustls::pki_types::CertificateDer;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::time::SystemTime;
-use x509_parser::prelude::*;
 use x509_parser::extensions::{GeneralName, ParsedExtension};
-use ring::digest;
-use log::{info, error, debug};
-use env_logger;
+use x509_parser::prelude::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 初始化日志系统
     env_logger::init();
 
     // 证书目录
-    let cert_dir = Path::new("./certs");
+    let cert_dir = Path::new("./crate_cert");
 
     // 加载CA证书
     info!("加载CA证书...");
@@ -72,7 +72,11 @@ fn load_certificate(path: &Path) -> Result<CertificateDer<'static>, Box<dyn std:
 }
 
 // 验证证书
-fn verify_certificate(ca_cert: &CertificateDer, signed_cert: &CertificateDer, dns_name: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn verify_certificate(
+    ca_cert: &CertificateDer,
+    signed_cert: &CertificateDer,
+    dns_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     // 解析CA证书
     let (_, ca_x509) = X509Certificate::from_der(ca_cert.as_ref())?;
 
@@ -81,16 +85,14 @@ fn verify_certificate(ca_cert: &CertificateDer, signed_cert: &CertificateDer, dn
 
     let ca_public_key = ca_x509.public_key();
     let signed_x509_c = signed_x509.clone();
-    if signed_x509_c.verify_signature(Some(ca_public_key)).is_ok(){
+    if signed_x509_c.verify_signature(Some(ca_public_key)).is_ok() {
         info!("证书验证成功！");
-    }else {
+    } else {
         error!("证书验证失败");
         return Err("证书验证失败".into());
     }
 
-
     // 使用CA公钥验证签名
-
 
     // 验证证书有效期
     let now = SystemTime::now();
@@ -106,21 +108,21 @@ fn verify_certificate(ca_cert: &CertificateDer, signed_cert: &CertificateDer, dn
     // 检查CA证书的有效期
     let ca_not_before = ca_x509.validity().not_before;
     let ca_not_after = ca_x509.validity().not_after;
-    if ca_not_before.timestamp() > since_epoch as i64 || ca_not_after.timestamp() < since_epoch as i64 {
+    if ca_not_before.timestamp() > since_epoch as i64
+        || ca_not_after.timestamp() < since_epoch as i64
+    {
         return Err("CA证书已过期或尚未生效".into());
     }
 
     // 验证域名
-    let mut found = false;
     let mut all_domains = Vec::new();
 
     // 检查主题通用名称
     if let Some(cn) = signed_x509.subject().iter_common_name().next() {
         if let Ok(cn_str) = cn.as_str() {
             all_domains.push(cn_str.to_string());
-            if cn_str == dns_name {
-                found = true;
-            }
+            // 记录是否匹配了所需的DNS名称，但不使用这个结果
+            // 因为我们只需要收集所有域名并显示它们
         }
     }
 
@@ -139,10 +141,9 @@ fn verify_certificate(ca_cert: &CertificateDer, signed_cert: &CertificateDer, dn
                             GeneralName::DNSName(dns) => {
                                 debug!("从证书中提取到DNS名称: {}", dns);
                                 all_domains.push(dns.to_string());
-                                if *dns == dns_name {
-                                    found = true;
-                                }
-                            },
+                                // 检查DNS名称是否匹配，但不存储结果
+                                // 因为我们显示所有域名而不需要这个标志
+                            }
                             GeneralName::IPAddress(ip) => {
                                 // 将IP地址字节转换为字符串
                                 if ip.len() == 4 {
@@ -151,11 +152,11 @@ fn verify_certificate(ca_cert: &CertificateDer, signed_cert: &CertificateDer, dn
                                     debug!("从证书中提取到IP地址: {}", ip_str);
                                     all_domains.push(ip_str);
                                 }
-                            },
+                            }
                             _ => {} // 忽略其他类型的名称
                         }
                     }
-                },
+                }
                 _ => {
                     debug!("无法解析SAN扩展");
                 }
@@ -171,7 +172,7 @@ fn verify_certificate(ca_cert: &CertificateDer, signed_cert: &CertificateDer, dn
     // 输出证书包含的所有域名
     info!("证书包含的所有域名和IP地址:");
     for (i, domain) in all_domains.iter().enumerate() {
-        info!("  {}. {}", i+1, domain);
+        info!("  {}. {}", i + 1, domain);
     }
 
     Ok(())
@@ -194,7 +195,9 @@ fn display_certificate_info(cert: &CertificateDer) -> Result<(), Box<dyn std::er
     info!("有效期: {} 至 {}", not_before, not_after);
 
     // 显示证书序列号
-    let serial_hex = x509.raw_serial().iter()
+    let serial_hex = x509
+        .raw_serial()
+        .iter()
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<String>>()
         .join(":");
@@ -213,42 +216,71 @@ fn display_certificate_info(cert: &CertificateDer) -> Result<(), Box<dyn std::er
                 for (i, name) in san.general_names.iter().enumerate() {
                     match name {
                         GeneralName::DNSName(dns) => {
-                            info!("  {}. DNS名称: {}", i+1, dns);
-                        },
+                            info!("  {}. DNS名称: {}", i + 1, dns);
+                        }
                         GeneralName::IPAddress(ip) => {
                             if ip.len() == 4 {
-                                info!("  {}. IP地址: {}.{}.{}.{}", i+1, ip[0], ip[1], ip[2], ip[3]);
+                                info!(
+                                    "  {}. IP地址: {}.{}.{}.{}",
+                                    i + 1,
+                                    ip[0],
+                                    ip[1],
+                                    ip[2],
+                                    ip[3]
+                                );
                             } else {
-                                info!("  {}. IP地址: {:?}", i+1, ip);
+                                info!("  {}. IP地址: {:?}", i + 1, ip);
                             }
-                        },
+                        }
                         _ => {
-                            info!("  {}. 其他类型: {:?}", i+1, name);
+                            info!("  {}. 其他类型: {:?}", i + 1, name);
                         }
                     }
                 }
-            },
+            }
             ParsedExtension::BasicConstraints(bc) => {
                 info!("- 基本约束:");
                 info!("  CA: {}", bc.ca);
                 if let Some(path_len) = bc.path_len_constraint {
                     info!("  路径长度约束: {}", path_len);
                 }
-            },
+            }
             ParsedExtension::KeyUsage(ku) => {
                 info!("- 密钥用途:");
-                if ku.digital_signature() { info!("  数字签名"); }
-                if ku.non_repudiation() { info!("  不可否认"); }
-                if ku.key_encipherment() { info!("  密钥加密"); }
-                if ku.data_encipherment() { info!("  数据加密"); }
-                if ku.key_agreement() { info!("  密钥协商"); }
-                if ku.key_cert_sign() { info!("  证书签名"); }
-                if ku.crl_sign() { info!("  CRL签名"); }
-                if ku.encipher_only() { info!("  仅加密"); }
-                if ku.decipher_only() { info!("  仅解密"); }
-            },
+                if ku.digital_signature() {
+                    info!("  数字签名");
+                }
+                if ku.non_repudiation() {
+                    info!("  不可否认");
+                }
+                if ku.key_encipherment() {
+                    info!("  密钥加密");
+                }
+                if ku.data_encipherment() {
+                    info!("  数据加密");
+                }
+                if ku.key_agreement() {
+                    info!("  密钥协商");
+                }
+                if ku.key_cert_sign() {
+                    info!("  证书签名");
+                }
+                if ku.crl_sign() {
+                    info!("  CRL签名");
+                }
+                if ku.encipher_only() {
+                    info!("  仅加密");
+                }
+                if ku.decipher_only() {
+                    info!("  仅解密");
+                }
+            }
             _ => {
-                info!("- {}: {}", extension.oid, format_extension_value(&extension.value));
+                info!(
+                    "- {}: {}",
+                    extension.oid,
+                    format_extension_value(&extension.value)
+                );
             }
         }
     }
@@ -259,7 +291,8 @@ fn display_certificate_info(cert: &CertificateDer) -> Result<(), Box<dyn std::er
 // 格式化扩展值
 fn format_extension_value(value: &[u8]) -> String {
     // 简单地将字节转换为十六进制字符串
-    value.iter()
+    value
+        .iter()
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<String>>()
         .join(":")
