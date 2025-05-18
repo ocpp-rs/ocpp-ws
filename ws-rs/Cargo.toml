@@ -1,9 +1,11 @@
 [package]
 name = "ws-rs"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["OCPP-rs Team"]
 description = "WebSocket library for OCPP communications with TLS support"
+repository = "https://github.com/ocpp-rs/ocpp-ws.git"
+documentation = "https://docs.rs/ws-rs"
 license = "MIT"
 
 [dependencies]
