@@ -1397,6 +1397,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "ws_lib",
 ]
 
 [[package]]

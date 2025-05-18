@@ -2,6 +2,9 @@
 name = "ws_lib"
 version = "0.1.0"
 edition = "2024"
+authors = ["OCPP-rs Team"]
+description = "WebSocket library for OCPP communications with TLS support"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1.36.0", features = ["full"] }

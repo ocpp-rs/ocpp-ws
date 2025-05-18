@@ -13,3 +13,4 @@ rustls-pemfile = "2.1.0"
 log = "0.4.20"
 env_logger = "0.11.2"
 base64 = "0.22.1"
+ws_lib = { path = "../ws_lib", features = ["server"] }
