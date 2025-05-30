@@ -18,105 +18,90 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_channel_capacity(200) // Optimize channel buffer size
         .build();
 
-    // Connect to WebSocket server with proper error handling
-    info!("Connecting to WebSocket server...");
-    match client
-        .connect(
-            "wss://127.0.0.1:9999",
-            "./crate_cert",
-            "b_cert.pem",
-            "b_key.pem",
-            "ca_cert.pem",
-        )
-        .await
-    {
-        Ok(_) => info!("Connected to WebSocket server"),
-        Err(e) => {
-            error!("Connection failed: {}", e);
-            return Err(e);
-        }
-    }
+    // Test different URL paths with automatic URL decoding and data operations
+    let test_urls = vec![
+        ("wss://127.0.0.1:9999/ocpp/CS001", "OCPP Charging Station CS001", vec![
+            "Test message from OCPP Charging Station CS001",
+            "STORE:station_CS001:Online",
+            "READ:station_CS001",
+        ]),
+        ("wss://127.0.0.1:9999/ocpp/RDAM%7C123", "OCPP Station with pipe character (URL encoded)", vec![
+            "Test message from OCPP Station with pipe character",
+            "STORE:station_RDAM123:Charging",
+            "READ:station_RDAM123",
+        ]),
+        ("wss://127.0.0.1:9999/api/v1/websocket", "API WebSocket v1", vec![
+            "Test message from API WebSocket v1",
+            "STORE:api_endpoint:active",
+            "READ:api_endpoint",
+        ]),
+        ("wss://127.0.0.1:9999/", "Root path", vec![
+            "Test message from Root path",
+            "STORE:root_connection:established",
+            "READ:root_connection",
+        ]),
+    ];
 
-    // Verify connection is active
-    if !client.is_connected() {
-        error!("Connection status check failed");
-        return Err("Connection status verification failed".into());
-    }
+    for (url, description, messages) in test_urls {
+        info!("Testing: {} ({})", url, description);
 
-    // Send a text message
-    let message = "Hello, WebSocket server!";
-    info!("Sending message: {}", message);
-    client.send_text(message.to_string()).await?;
+        match client
+            .connect(
+                url,
+                "./crate_cert",
+                "b_cert.pem",
+                "b_key.pem",
+                "ca_cert.pem",
+            )
+            .await
+        {
+            Ok(_) => {
+                info!("✓ Connected to: {}", url);
 
-    // Receive message with timeout
-    match client.receive_message_timeout(Duration::from_secs(5)).await {
-        Ok(Some(response)) => match response {
-            MessageType::Text(text) => info!("Received server response: {}", text),
-            MessageType::Binary(data) => {
-                info!("Received server binary response: {} bytes", data.len())
-            }
-        },
-        Ok(None) => {
-            error!("Not connected to server");
-            return Err("Not connected to server".into());
-        }
-        Err(_) => {
-            error!("Receive timeout");
-            // Continue despite timeout
-        }
-    }
+                // Send multiple test messages including data operations
+                for message in messages {
+                    if let Err(e) = client.send_text(message.to_string()).await {
+                        error!("Failed to send message: {}", e);
+                    } else {
+                        info!("Sent: {}", message);
 
-    // Send multiple messages
-    for i in 1..=5 {
-        // Create test message
-        let message = format!("Message #{}", i);
-        info!("Sending message: {}", message);
+                        // Try to receive response
+                        match client.receive_message_timeout(Duration::from_secs(2)).await {
+                            Ok(Some(MessageType::Text(response))) => {
+                                info!("Received: {}", response);
+                            }
+                            Ok(Some(MessageType::Binary(data))) => {
+                                info!("Received binary: {} bytes", data.len());
+                            }
+                            Ok(None) => {
+                                error!("Not connected");
+                            }
+                            Err(_) => {
+                                error!("Receive timeout");
+                            }
+                        }
+                    }
 
-        // Send the message
-        if let Err(e) = client.send_text(message).await {
-            error!("Send failed: {}", e);
-
-            // Check connection and attempt reconnect if needed
-            if !client.check_connection().await {
-                info!("Connection lost, attempting to reconnect");
-                if let Err(e) = client.reconnect().await {
-                    error!("Reconnection failed: {}", e);
-                    break;
+                    // Small delay between messages
+                    sleep(Duration::from_millis(200)).await;
                 }
-                info!("Reconnection successful");
-            }
-            continue;
-        }
 
-        // Receive response with timeout
-        match client.receive_message_timeout(Duration::from_secs(3)).await {
-            Ok(Some(response)) => match response {
-                MessageType::Text(text) => info!("Received server response: {}", text),
-                MessageType::Binary(data) => {
-                    info!("Received server binary response: {} bytes", data.len())
-                }
-            },
-            Ok(None) => {
-                error!("Not connected to server");
-                break;
+                // Add small delay before closing to allow TLS cleanup
+                sleep(Duration::from_millis(100)).await;
+
+                // Close connection
+                client.close().await;
+                info!("Connection closed\n");
             }
-            Err(_) => {
-                error!("Receive timeout");
-                // Send a ping to check connection
-                if let Err(e) = client.ping().await {
-                    error!("Ping failed: {}", e);
-                    break;
-                }
+            Err(e) => {
+                error!("✗ Failed to connect to {}: {}\n", url, e);
             }
         }
 
-        // Wait between messages
+        // Wait between tests
         sleep(Duration::from_secs(1)).await;
     }
 
-    // Gracefully close the connection
-    info!("Closing WebSocket connection");
-    client.close().await;
-
+    info!("URL path conversion testing completed!");
     Ok(())
 }

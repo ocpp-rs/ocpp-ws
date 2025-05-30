@@ -1366,6 +1366,7 @@ dependencies = [
  "env_logger",
  "futures-util",
  "log",
+ "percent-encoding",
  "rustls",
  "rustls-pemfile",
  "tokio",

@@ -556,7 +556,13 @@ impl WebSocketClient {
                         }
                     }
                     Err(e) => {
-                        error!("Error receiving message: {}", e);
+                        let err_str = e.to_string();
+                        // Check if this is a TLS close_notify error (common during normal connection closure)
+                        if err_str.contains("peer closed connection without sending TLS close_notify") {
+                            warn!("Connection closed without TLS close_notify (normal during quick disconnection)");
+                        } else {
+                            error!("Error receiving message: {}", e);
+                        }
                         break;
                     }
                 }

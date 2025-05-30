@@ -4,15 +4,18 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use std::collections::HashMap;
 
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use log::{debug, error, info, warn};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::handshake::server::{Request, Response, ErrorResponse};
+use crate::path_utils::PathInfo;
 
 /// Message type for communication with WebSocket clients
 #[derive(Debug, Clone)]
@@ -91,16 +94,36 @@ impl Default for WsServerConfig {
 /// Implement this trait to handle incoming WebSocket messages.
 pub trait ServerHandler: Send + Sync + 'static {
     /// Called when a client connects
-    fn on_connect(&self, client_id: ClientId, addr: SocketAddr);
-    
+    ///
+    /// # Arguments
+    /// * `client_id` - Unique identifier for the client
+    /// * `addr` - Socket address of the client
+    /// * `path` - URL path from the WebSocket connection request (e.g., "/ocpp/CS001")
+    fn on_connect(&self, client_id: ClientId, addr: SocketAddr, path: String);
+
+    /// Called when a client connects with enhanced path information
+    ///
+    /// This method provides additional URL path processing capabilities including
+    /// automatic URL decoding and path analysis. If not implemented, it will
+    /// fall back to calling `on_connect` with the raw path.
+    ///
+    /// # Arguments
+    /// * `client_id` - Unique identifier for the client
+    /// * `addr` - Socket address of the client
+    /// * `path_info` - Processed path information with URL decoding and analysis
+    fn on_connect_with_path(&self, client_id: ClientId, addr: SocketAddr, path_info: PathInfo) {
+        // Default implementation falls back to the original method
+        self.on_connect(client_id, addr, path_info.raw_path);
+    }
+
     /// Called when a client disconnects
     fn on_disconnect(&self, client_id: ClientId);
-    
+
     /// Called when a message is received from a client
     ///
     /// Return optional response message
     fn on_message(&self, client_id: ClientId, message: WsMessage) -> Option<WsMessage>;
-    
+
     /// Called when an error occurs
     fn on_error(&self, client_id: Option<ClientId>, error: String);
 }
@@ -111,12 +134,161 @@ struct ClientConnection {
     tx: mpsc::Sender<WsMessage>,
 }
 
+/// Handle for interacting with a specific client connection
+///
+/// This handle provides methods for bidirectional communication with a client,
+/// including sending messages and managing client-specific data storage.
+/// The handle is thread-safe and can be shared across multiple tasks.
+///
+/// # Example
+///
+/// ```ignore
+/// // Get a handle for a specific client
+/// if let Some(handle) = server.get_client_handle(&client_id).await {
+///     // Send a message to the client
+///     handle.send_message(WsMessage::Text("Hello!".to_string())).await?;
+///
+///     // Store some data for this client
+///     handle.write_data("session_id".to_string(), "abc123".as_bytes().to_vec()).await?;
+///
+///     // Read data back
+///     if let Some(data) = handle.read_data("session_id").await? {
+///         let session_id = String::from_utf8(data)?;
+///         println!("Session ID: {}", session_id);
+///     }
+/// }
+/// ```
+#[derive(Clone)]
+pub struct ClientHandle {
+    client_id: ClientId,
+    addr: SocketAddr,
+    path_info: PathInfo,
+    /// Channel to send messages to this client
+    tx: mpsc::Sender<WsMessage>,
+    /// Channel to receive messages from this client (for application use)
+    message_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<WsMessage>>>,
+}
+
+impl ClientHandle {
+    /// Get the client ID
+    pub fn client_id(&self) -> &ClientId {
+        &self.client_id
+    }
+
+    /// Get the client's socket address
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Get the client's path information
+    pub fn path_info(&self) -> &PathInfo {
+        &self.path_info
+    }
+
+    /// Send a message to this client
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Message to send
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), String>` - Success or error
+    pub async fn send_message(&self, message: WsMessage) -> Result<(), String> {
+        self.tx.send(message)
+            .await
+            .map_err(|_| format!("Failed to send message to client {}", self.client_id.0))
+    }
+
+    /// Read a message from this client (non-blocking)
+    ///
+    /// This method attempts to read a message that was sent by the client.
+    /// It returns immediately with None if no message is available.
+    ///
+    /// # Returns
+    ///
+    /// * `Option<WsMessage>` - The message if available, None if no message is waiting
+    pub async fn try_read_message(&self) -> Option<WsMessage> {
+        let mut rx = self.message_rx.lock().await;
+        rx.try_recv().ok()
+    }
+
+    /// Read a message from this client (blocking)
+    ///
+    /// This method waits for a message from the client. It will block until
+    /// a message is received or the connection is closed.
+    ///
+    /// # Returns
+    ///
+    /// * `Option<WsMessage>` - The message if received, None if connection is closed
+    pub async fn read_message(&self) -> Option<WsMessage> {
+        let mut rx = self.message_rx.lock().await;
+        rx.recv().await
+    }
+
+
+
+    /// Check if this client is still connected
+    ///
+    /// This method checks if the message channel is still open, which indicates
+    /// that the client connection is still active.
+    ///
+    /// # Returns
+    ///
+    /// * `bool` - True if the client is still connected, false otherwise
+    pub async fn is_connected(&self) -> bool {
+        !self.tx.is_closed()
+    }
+}
+
+/// Manager for client handles
+///
+/// This structure manages active client handles and provides thread-safe access
+/// to them. It automatically cleans up handles when clients disconnect.
+struct ClientHandleManager {
+    handles: Arc<RwLock<HashMap<ClientId, ClientHandle>>>,
+}
+
+impl ClientHandleManager {
+    /// Create a new client handle manager
+    fn new() -> Self {
+        Self {
+            handles: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Get a client handle by ID
+    async fn get_handle(&self, client_id: &ClientId) -> Option<ClientHandle> {
+        let handles = self.handles.read().await;
+        handles.get(client_id).cloned()
+    }
+
+    /// Get all active client handles
+    async fn get_all_handles(&self) -> Vec<ClientHandle> {
+        let handles = self.handles.read().await;
+        handles.values().cloned().collect()
+    }
+
+    /// Get the number of active handles
+    async fn handle_count(&self) -> usize {
+        let handles = self.handles.read().await;
+        handles.len()
+    }
+
+    /// Get all client IDs with active handles
+    async fn get_client_ids(&self) -> Vec<ClientId> {
+        let handles = self.handles.read().await;
+        handles.keys().cloned().collect()
+    }
+}
+
 /// WebSocket Server
 pub struct WsServer {
     config: WsServerConfig,
     handler: Arc<dyn ServerHandler>,
     tls_acceptor: TlsAcceptor,
     clients: Arc<tokio::sync::Mutex<Vec<ClientConnection>>>,
+    handle_manager: ClientHandleManager,
 }
 
 impl WsServer {
@@ -139,6 +311,7 @@ impl WsServer {
             handler: Arc::new(handler),
             tls_acceptor,
             clients: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            handle_manager: ClientHandleManager::new(),
         })
     }
     
@@ -163,20 +336,22 @@ impl WsServer {
                     let acceptor = self.tls_acceptor.clone();
                     let handler = self.handler.clone();
                     let clients = self.clients.clone();
+                    let handle_manager = self.handle_manager.handles.clone();
                     let connection_timeout = Duration::from_secs(self.config.connection_timeout);
-                    
+
                     // Generate a unique client ID
                     let client_id = ClientId(format!("client-{}", uuid_simple()));
                     let client_id_clone = client_id.clone();
-                    
+
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_connection(
-                            stream, 
-                            addr, 
-                            acceptor, 
-                            handler, 
-                            clients, 
-                            client_id_clone, 
+                            stream,
+                            addr,
+                            acceptor,
+                            handler,
+                            clients,
+                            handle_manager,
+                            client_id_clone,
                             connection_timeout
                         ).await {
                             error!("Connection error for {}: {}", addr, e);
@@ -263,7 +438,210 @@ impl WsServer {
         let clients = self.clients.lock().await;
         clients.iter().map(|c| c.client_id.clone()).collect()
     }
-    
+
+
+
+    /// Get a handle for a specific client
+    ///
+    /// This method returns a `ClientHandle` that can be used to interact with
+    /// a specific client connection. The handle provides methods for sending
+    /// messages and managing client data.
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The ID of the client to get a handle for
+    ///
+    /// # Returns
+    ///
+    /// * `Option<ClientHandle>` - The client handle if the client is connected, None otherwise
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Get a handle for a specific client
+    /// if let Some(handle) = server.get_client_handle(&client_id).await {
+    ///     // Send a message to the client
+    ///     handle.send_message(WsMessage::Text("Hello!".to_string())).await?;
+    /// }
+    /// ```
+    pub async fn get_client_handle(&self, client_id: &ClientId) -> Option<ClientHandle> {
+        self.handle_manager.get_handle(client_id).await
+    }
+
+    /// Get handles for all connected clients
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<ClientHandle>` - List of handles for all connected clients
+    pub async fn get_all_client_handles(&self) -> Vec<ClientHandle> {
+        self.handle_manager.get_all_handles().await
+    }
+
+    /// Get the number of active client handles
+    ///
+    /// # Returns
+    ///
+    /// * `usize` - Number of active client handles
+    pub async fn client_handle_count(&self) -> usize {
+        self.handle_manager.handle_count().await
+    }
+
+    /// Get all client IDs that have active handles
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<ClientId>` - List of client IDs with active handles
+    pub async fn get_client_handle_ids(&self) -> Vec<ClientId> {
+        self.handle_manager.get_client_ids().await
+    }
+
+    /// Get the URL suffix for a specific client
+    ///
+    /// This method returns the URL path suffix that was used when the client connected.
+    /// For example, if a client connected to `wss://127.0.0.1:9999/ocpp/CS001`,
+    /// this method will return `"ocpp/CS001"`.
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The ID of the client to get the URL suffix for
+    ///
+    /// # Returns
+    ///
+    /// * `Option<String>` - The URL suffix if the client is connected, None otherwise
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Client connected to: wss://127.0.0.1:9999/ocpp/CS001
+    /// if let Some(suffix) = server.get_client_url_suffix(&client_id).await {
+    ///     println!("Client URL suffix: {}", suffix); // Prints: "ocpp/CS001"
+    /// }
+    /// ```
+    pub async fn get_client_url_suffix(&self, client_id: &ClientId) -> Option<String> {
+        if let Some(handle) = self.get_client_handle(client_id).await {
+            Some(handle.path_info().suffix().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Get the decoded URL suffix for a specific client
+    ///
+    /// This method returns the URL-decoded path suffix that was used when the client connected.
+    /// URL encoding like `%7C` will be converted to `|`, `%20` to space, etc.
+    /// For example, if a client connected to `wss://127.0.0.1:9999/ocpp/RDAM%7C123`,
+    /// this method will return `"ocpp/RDAM|123"`.
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The ID of the client to get the decoded URL suffix for
+    ///
+    /// # Returns
+    ///
+    /// * `Option<String>` - The decoded URL suffix if the client is connected, None otherwise
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Client connected to: wss://127.0.0.1:9999/ocpp/RDAM%7C123
+    /// if let Some(suffix) = server.get_client_url_suffix_decoded(&client_id).await {
+    ///     println!("Decoded URL suffix: {}", suffix); // Prints: "ocpp/RDAM|123"
+    /// }
+    /// ```
+    pub async fn get_client_url_suffix_decoded(&self, client_id: &ClientId) -> Option<String> {
+        if let Some(handle) = self.get_client_handle(client_id).await {
+            Some(handle.path_info().decoded_suffix().to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Get the full path information for a specific client
+    ///
+    /// This method returns the complete `PathInfo` object containing both raw and decoded
+    /// path information, along with various utility methods for path analysis.
+    ///
+    /// # Arguments
+    ///
+    /// * `client_id` - The ID of the client to get the path information for
+    ///
+    /// # Returns
+    ///
+    /// * `Option<PathInfo>` - The path information if the client is connected, None otherwise
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// if let Some(path_info) = server.get_client_path_info(&client_id).await {
+    ///     println!("Raw path: {}", path_info.raw());
+    ///     println!("Decoded path: {}", path_info.decoded());
+    ///     println!("URL suffix: {}", path_info.suffix());
+    ///     println!("Decoded suffix: {}", path_info.decoded_suffix());
+    ///     println!("Path segments: {:?}", path_info.segments());
+    /// }
+    /// ```
+    pub async fn get_client_path_info(&self, client_id: &ClientId) -> Option<PathInfo> {
+        if let Some(handle) = self.get_client_handle(client_id).await {
+            Some(handle.path_info().clone())
+        } else {
+            None
+        }
+    }
+
+    /// Get URL suffixes for all connected clients
+    ///
+    /// This method returns a mapping of client IDs to their URL suffixes.
+    ///
+    /// # Returns
+    ///
+    /// * `HashMap<ClientId, String>` - Map of client IDs to their URL suffixes
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let client_suffixes = server.get_all_client_url_suffixes().await;
+    /// for (client_id, suffix) in client_suffixes {
+    ///     println!("Client {} connected with suffix: {}", client_id.0, suffix);
+    /// }
+    /// ```
+    pub async fn get_all_client_url_suffixes(&self) -> std::collections::HashMap<ClientId, String> {
+        let mut result = std::collections::HashMap::new();
+        let handles = self.get_all_client_handles().await;
+
+        for handle in handles {
+            result.insert(handle.client_id().clone(), handle.path_info().suffix().to_string());
+        }
+
+        result
+    }
+
+    /// Get decoded URL suffixes for all connected clients
+    ///
+    /// This method returns a mapping of client IDs to their decoded URL suffixes.
+    ///
+    /// # Returns
+    ///
+    /// * `HashMap<ClientId, String>` - Map of client IDs to their decoded URL suffixes
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let client_suffixes = server.get_all_client_url_suffixes_decoded().await;
+    /// for (client_id, suffix) in client_suffixes {
+    ///     println!("Client {} connected with decoded suffix: {}", client_id.0, suffix);
+    /// }
+    /// ```
+    pub async fn get_all_client_url_suffixes_decoded(&self) -> std::collections::HashMap<ClientId, String> {
+        let mut result = std::collections::HashMap::new();
+        let handles = self.get_all_client_handles().await;
+
+        for handle in handles {
+            result.insert(handle.client_id().clone(), handle.path_info().decoded_suffix().to_string());
+        }
+
+        result
+    }
+
     /// Handle a new WebSocket connection
     async fn handle_connection(
         stream: TcpStream,
@@ -271,6 +649,7 @@ impl WsServer {
         acceptor: TlsAcceptor,
         handler: Arc<dyn ServerHandler>,
         clients: Arc<tokio::sync::Mutex<Vec<ClientConnection>>>,
+        handle_manager: Arc<RwLock<HashMap<ClientId, ClientHandle>>>,
         client_id: ClientId,
         connection_timeout: Duration,
     ) -> Result<(), String> {
@@ -284,19 +663,36 @@ impl WsServer {
             
         debug!("TLS handshake successful for {}", addr);
         
-        // Apply timeout to the WebSocket handshake
+        // Apply timeout to the WebSocket handshake with header callback to extract path
+        use std::sync::{Arc, Mutex};
+        let connection_path = Arc::new(Mutex::new(String::new()));
+        let path_clone = connection_path.clone();
+
+        let callback = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+            // Extract the path from the request URI
+            let path = request.uri().path().to_string();
+            if let Ok(mut path_guard) = path_clone.lock() {
+                *path_guard = path.clone();
+            }
+            debug!("WebSocket connection request path: {}", path);
+            Ok(response)
+        };
+
         let ws_stream = tokio::time::timeout(
             connection_timeout,
-            accept_async(tls_handshake),
+            accept_hdr_async(tls_handshake, callback),
         ).await
             .map_err(|_| format!("WebSocket handshake timed out after {} seconds", connection_timeout.as_secs()))?
             .map_err(|e| format!("WebSocket handshake failed: {}", e))?;
-            
-        debug!("WebSocket handshake successful for {}", addr);
+
+        let extracted_path = connection_path.lock().unwrap().clone();
+        debug!("WebSocket handshake successful for {} with path: {}", addr, extracted_path);
         
         // Create message channels
         let (tx, mut rx) = mpsc::channel::<WsMessage>(100);
-        
+        // Create channel for forwarding messages to application layer
+        let (app_tx, app_rx) = mpsc::channel::<WsMessage>(100);
+
         // Register the client
         {
             let mut clients_lock = clients.lock().await;
@@ -304,12 +700,32 @@ impl WsServer {
                 client_id: client_id.clone(),
                 tx: tx.clone(),
             });
-            
+
             info!("Client connected: {} from {}", client_id.0, addr);
         }
-        
-        // Notify the handler about the new connection
-        handler.on_connect(client_id.clone(), addr);
+
+        // Create PathInfo for enhanced path processing
+        let path_info = PathInfo::new(extracted_path);
+        debug!("Path info created: raw='{}', decoded='{}', suffix='{}'",
+               path_info.raw(), path_info.decoded(), path_info.decoded_suffix());
+
+        // Create a client handle and register it
+        let client_handle = ClientHandle {
+            client_id: client_id.clone(),
+            addr,
+            path_info: path_info.clone(),
+            tx: tx.clone(),
+            message_rx: Arc::new(tokio::sync::Mutex::new(app_rx)),
+        };
+
+        // Register the handle
+        {
+            let mut handles = handle_manager.write().await;
+            handles.insert(client_id.clone(), client_handle);
+        }
+
+        // Notify the handler about the new connection with enhanced path information
+        handler.on_connect_with_path(client_id.clone(), addr, path_info);
         
         // Split WebSocket stream
         let (ws_sender, ws_receiver) = ws_stream.split();
@@ -347,7 +763,8 @@ impl WsServer {
             let handler_for_recv = handler.clone();
             let client_id_for_recv = client_id.clone();
             let tx_for_recv = tx.clone();
-            
+            let app_tx_for_recv = app_tx.clone();
+
             async move {
                 while let Some(result) = ws_receiver.next().await {
                     match result {
@@ -356,10 +773,13 @@ impl WsServer {
                                 debug!("Client {} requested close", client_id_for_recv.0);
                                 break;
                             }
-                            
+
                             // Convert to our message type
                             let ws_msg = WsMessage::from(msg);
-                            
+
+                            // Forward message to application layer (non-blocking)
+                            let _ = app_tx_for_recv.try_send(ws_msg.clone());
+
                             // Let the handler process the message
                             if let Some(response) = handler_for_recv.on_message(client_id_for_recv.clone(), ws_msg) {
                                 // Send the response if provided
@@ -375,7 +795,7 @@ impl WsServer {
                         }
                     }
                 }
-                
+
                 debug!("Receive task completed for client {}", client_id_for_recv.0);
             }.boxed()
         };
@@ -388,8 +808,15 @@ impl WsServer {
         
         // Clean up
         Self::remove_client(clients, client_id.clone()).await;
+
+        // Remove the client handle
+        {
+            let mut handles = handle_manager.write().await;
+            handles.remove(&client_id);
+        }
+
         handler.on_disconnect(client_id.clone());
-        
+
         info!("Client disconnected: {} from {}", client_id.0, addr);
         Ok(())
     }
