@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{Connector, connect_async_tls_with_config};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use url::Url;
 
 /// WebSocket client structure for handling secure WebSocket connections.
@@ -93,6 +94,8 @@ pub struct WSClientConfig {
     pub max_reconnect_attempts: u32,
     /// Delay between reconnection attempts
     pub reconnect_delay: Duration,
+    /// WebSocket subprotocols to request (e.g., ["ocpp2.1", "ocpp2.0.1", "ocpp1.6"])
+    pub subprotocols: Vec<String>,
 }
 
 impl Default for WSClientConfig {
@@ -103,6 +106,7 @@ impl Default for WSClientConfig {
             auto_reconnect: false,
             max_reconnect_attempts: 5,
             reconnect_delay: Duration::from_secs(2),
+            subprotocols: Vec::new(),
         }
     }
 }
@@ -147,6 +151,25 @@ impl WebSocketClientBuilder {
     /// Set delay between reconnection attempts
     pub fn with_reconnect_delay(mut self, delay: Duration) -> Self {
         self.config.reconnect_delay = delay;
+        self
+    }
+
+    /// Set WebSocket subprotocols to request
+    ///
+    /// # Example
+    /// ```ignore
+    /// let client = WebSocketClient::builder()
+    ///     .with_subprotocols(vec!["ocpp2.1".to_string(), "ocpp2.0.1".to_string(), "ocpp1.6".to_string()])
+    ///     .build();
+    /// ```
+    pub fn with_subprotocols(mut self, subprotocols: Vec<String>) -> Self {
+        self.config.subprotocols = subprotocols;
+        self
+    }
+
+    /// Add a single subprotocol
+    pub fn with_subprotocol(mut self, subprotocol: String) -> Self {
+        self.config.subprotocols.push(subprotocol);
         self
     }
 
@@ -434,13 +457,42 @@ impl WebSocketClient {
 
         // Connect to WebSocket server with timeout
         info!("Connecting to WebSocket server: {}", server_url);
+
+        // Log subprotocols if any are configured
+        if !self.config.subprotocols.is_empty() {
+            info!("Subprotocols configured: {:?}", self.config.subprotocols);
+        }
+
+        // Create WebSocket request with subprotocol headers
+        let mut request = server_url.clone().into_client_request()?;
+
+        // Add subprotocol header if configured
+        if !self.config.subprotocols.is_empty() {
+            let protocols = self.config.subprotocols.join(", ");
+            request.headers_mut().insert(
+                "sec-websocket-protocol",
+                protocols.parse().map_err(|e| format!("Invalid subprotocol header: {}", e))?
+            );
+            info!("Added Sec-WebSocket-Protocol header: {}", protocols);
+        }
+
         // Use timeout for connection attempt
         let connection_attempt =
-            connect_async_tls_with_config(server_url.clone(), None, false, Some(connector));
+            connect_async_tls_with_config(request, None, false, Some(connector));
         let ws_stream = match timeout(self.config.connection_timeout, connection_attempt).await {
             Ok(result) => {
                 match result {
-                    Ok((stream, _)) => stream,
+                    Ok((stream, response)) => {
+                        // Check if server selected a subprotocol
+                        if let Some(selected_protocol) = response.headers().get("sec-websocket-protocol") {
+                            if let Ok(protocol_str) = selected_protocol.to_str() {
+                                info!("Server selected subprotocol: {}", protocol_str);
+                            }
+                        } else if !self.config.subprotocols.is_empty() {
+                            info!("Server did not select any subprotocol");
+                        }
+                        stream
+                    }
                     Err(e) => {
                         error!("Connection error: {}", e);
 

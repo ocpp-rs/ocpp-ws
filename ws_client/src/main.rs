@@ -9,18 +9,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
 
-    // Create WebSocket client with optimized configuration
+    // Create WebSocket client with OCPP subprotocol support
     let mut client = WebSocketClient::builder()
         .with_connection_timeout(Duration::from_secs(10)) // Set connection timeout
         .with_auto_reconnect(true) // Enable auto-reconnection
         .with_max_reconnect_attempts(3) // Configure reconnection attempts
         .with_reconnect_delay(Duration::from_secs(2)) // Set delay between reconnections
         .with_channel_capacity(200) // Optimize channel buffer size
+        .with_subprotocols(vec![
+            "ocpp2.1".to_string(),
+            "ocpp2.0.1".to_string(),
+            "ocpp1.6".to_string()
+        ]) // OCPP protocol versions as per OCPP 2.1 specification
         .build();
 
-    // Test a simple connection with minimal messages
+    // Test different OCPP and WebSocket scenarios
     let test_urls = vec![
-        ("wss://127.0.0.1:9999/ocpp/CS001", "OCPP Station", vec!["hello"]),
+        ("wss://127.0.0.1:9999/ocpp/CS001", "OCPP Station CS001", vec!["hello"]),
+        ("wss://127.0.0.1:9999/webServices/ocpp/CS3211", "OCPP-J Station CS3211 (OCPP 2.1 style)", vec![
+            r#"[2,"19223201","BootNotification",{"reason":"PowerUp","chargingStation":{"model":"SingleSocketCharger","vendorName":"VendorX"}}]"#
+        ]),
+        ("wss://127.0.0.1:9999/ocpp/RDAM%7C123", "OCPP Station with special chars", vec!["status"]),
         ("wss://127.0.0.1:9999/", "Root path", vec!["ping"]),
     ];
 

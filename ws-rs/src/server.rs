@@ -98,6 +98,8 @@ pub struct ConnectionInterface {
     client_id: ClientId,
     addr: SocketAddr,
     path_info: PathInfo,
+    /// Selected WebSocket subprotocol (e.g., "ocpp2.1")
+    subprotocol: Option<String>,
     /// Channel to send messages to this client
     tx: mpsc::Sender<WsMessage>,
     /// Channel to receive messages from this client
@@ -135,6 +137,14 @@ impl ConnectionInterface {
     /// converted to `|`, `%20` to space, etc.
     pub fn url_suffix_decoded(&self) -> &str {
         self.path_info.decoded_suffix()
+    }
+
+    /// Get the selected WebSocket subprotocol for this connection
+    ///
+    /// Returns the subprotocol that was negotiated during the WebSocket handshake.
+    /// For OCPP connections, this might be "ocpp2.1", "ocpp2.0.1", or "ocpp1.6".
+    pub fn subprotocol(&self) -> Option<&str> {
+        self.subprotocol.as_deref()
     }
 
     /// Send a message to this client
@@ -410,16 +420,62 @@ impl WsServer {
 
         debug!("TLS handshake successful for {}", addr);
 
-        // Apply timeout to the WebSocket handshake with header callback to extract path
+        // Apply timeout to the WebSocket handshake with header callback to extract path and handle subprotocols
         use std::sync::{Arc, OnceLock};
         let connection_path: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
+        let selected_subprotocol: Arc<OnceLock<Option<String>>> = Arc::new(OnceLock::new());
         let path_clone = connection_path.clone();
+        let subprotocol_clone = selected_subprotocol.clone();
 
-        let callback = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+        let callback = move |request: &Request, mut response: Response| -> Result<Response, ErrorResponse> {
             // Extract the path from the request URI
             let path = request.uri().path().to_string();
             let _ = path_clone.set(path.clone());
             debug!("WebSocket connection request path: {}", path);
+
+            // Handle subprotocol negotiation
+            if let Some(protocols_header) = request.headers().get("sec-websocket-protocol") {
+                if let Ok(protocols_str) = protocols_header.to_str() {
+                    debug!("Client requested subprotocols: {}", protocols_str);
+
+                    // Parse requested protocols
+                    let requested_protocols: Vec<&str> = protocols_str
+                        .split(',')
+                        .map(|s| s.trim())
+                        .collect();
+
+                    // OCPP protocol priority: prefer newer versions
+                    let supported_protocols = ["ocpp2.1", "ocpp2.0.1", "ocpp1.6"];
+                    let mut selected_protocol = None;
+
+                    // Find the first supported protocol in priority order
+                    for supported in &supported_protocols {
+                        if requested_protocols.contains(supported) {
+                            selected_protocol = Some(supported.to_string());
+                            break;
+                        }
+                    }
+
+                    if let Some(protocol) = &selected_protocol {
+                        info!("Selected subprotocol: {}", protocol);
+                        response.headers_mut().insert(
+                            "sec-websocket-protocol",
+                            protocol.parse().unwrap()
+                        );
+                    } else {
+                        debug!("No supported subprotocol found in: {:?}", requested_protocols);
+                    }
+
+                    let _ = subprotocol_clone.set(selected_protocol);
+                } else {
+                    debug!("Invalid subprotocol header format");
+                    let _ = subprotocol_clone.set(None);
+                }
+            } else {
+                debug!("No subprotocol header found");
+                let _ = subprotocol_clone.set(None);
+            }
+
             Ok(response)
         };
 
@@ -433,7 +489,14 @@ impl WsServer {
         let extracted_path = connection_path.get()
             .cloned()
             .unwrap_or_else(|| "/".to_string());
+        let negotiated_subprotocol = selected_subprotocol.get()
+            .cloned()
+            .unwrap_or(None);
+
         debug!("WebSocket handshake successful for {} with path: {}", addr, extracted_path);
+        if let Some(ref protocol) = negotiated_subprotocol {
+            info!("Subprotocol negotiated: {}", protocol);
+        }
 
         // Create PathInfo for enhanced path processing
         let path_info = PathInfo::new(extracted_path);
@@ -449,6 +512,7 @@ impl WsServer {
             client_id: client_id.clone(),
             addr,
             path_info: path_info.clone(),
+            subprotocol: negotiated_subprotocol,
             tx: tx.clone(),
             rx: Arc::new(tokio::sync::Mutex::new(app_rx)),
         };

@@ -75,12 +75,16 @@ async fn send_welcome_message(interface: &ConnectionInterface, connection_type: 
     }
 
     // Send connection info as a structured message
+    let subprotocol_info = interface.subprotocol()
+        .map(|p| format!(", Protocol: {}", p))
+        .unwrap_or_default();
     let info_msg = format!(
-        "INFO: Client ID: {}, Address: {}, Path: {}, Type: {}",
+        "INFO: Client ID: {}, Address: {}, Path: {}, Type: {}{}",
         client_id.0,
         interface.addr(),
         interface.url_suffix_decoded(),
-        connection_type
+        connection_type,
+        subprotocol_info
     );
 
     if let Err(e) = interface.send_message(WsMessage::Text(info_msg)).await {
@@ -417,10 +421,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("📈 Connection Monitor: {} active connections", total_connections);
                 for client_id in &client_ids {
                     if let Some(interface) = server_monitor.get_connection_interface(client_id).await {
-                        info!("  👤 Client {}: {} ({})",
+                        let subprotocol_info = interface.subprotocol()
+                            .map(|p| format!(" [{}]", p))
+                            .unwrap_or_default();
+                        info!("  👤 Client {}: {} ({}{})",
                               client_id.0,
                               interface.addr(),
-                              interface.url_suffix_decoded());
+                              interface.url_suffix_decoded(),
+                              subprotocol_info);
                     }
                 }
             } else {
