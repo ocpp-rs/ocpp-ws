@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use rustls::RootCertStore;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::collections::HashMap;
@@ -550,8 +550,9 @@ impl WebSocketClient {
                             _ => continue,
                         };
 
-                        if let Err(e) = tx_receiver.send(message).await {
-                            error!("Error forwarding to receiver channel: {}", e);
+                        if let Err(_) = tx_receiver.send(message).await {
+                            // Channel closed - receiver has been dropped, which is normal during shutdown
+                            debug!("Receiver channel closed, stopping message forwarding");
                             break;
                         }
                     }
