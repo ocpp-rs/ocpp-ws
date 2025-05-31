@@ -382,7 +382,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logger
     env_logger::init();
 
-    // Define server configuration
+    // Define server configuration with RFC 7692 compression support
     let config = WsServerConfig {
         addr: "127.0.0.1:9999".to_string(),
         cert_path: PathBuf::from("./crate_cert/a_cert.pem"),
@@ -391,10 +391,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_connections: 100,
         connection_timeout: 30,
         client_cert_required: true,
+        compression: ws_rs::compression::CompressionConfig::new()
+            .with_enabled(true) // Enable RFC 7692 permessage-deflate compression
+            .with_level(6) // Balanced compression level (0-9, where 9 is max compression)
+            .with_server_max_window_bits(Some(15)) // Maximum server compression window
+            .with_client_max_window_bits(Some(15)) // Allow client maximum compression window
+            .with_server_no_context_takeover(false) // Allow server context takeover for better compression
+            .with_client_no_context_takeover(false), // Allow client context takeover for better compression
     };
 
     // Create and initialize server
-    info!("Starting WebSocket server...");
+    info!("Starting WebSocket server with RFC 7692 compression support...");
+    info!("📊 Compression Configuration:");
+    info!("   - Enabled: {}", config.compression.enabled);
+    info!("   - Level: {} (0=fastest, 9=best compression)", config.compression.level);
+    info!("   - Server max window bits: {:?}", config.compression.server_max_window_bits);
+    info!("   - Client max window bits: {:?}", config.compression.client_max_window_bits);
+    info!("   - Server no context takeover: {}", config.compression.server_no_context_takeover);
+    info!("   - Client no context takeover: {}", config.compression.client_no_context_takeover);
+    info!("📝 Note: Actual compression requires tungstenite library support (negotiation ready)");
+
     let mut server = WsServer::new(config)
         .map_err(|e| format!("Failed to create server: {}", e))?;
 

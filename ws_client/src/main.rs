@@ -9,7 +9,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     env_logger::init();
 
-    // Create WebSocket client with OCPP subprotocol support
+    // Create WebSocket client with OCPP subprotocol and RFC 7692 compression support
+    let compression_config = ws_rs::compression::CompressionConfig::new()
+        .with_enabled(true) // Enable RFC 7692 permessage-deflate compression
+        .with_level(6) // Balanced compression level (0=fastest, 9=best compression)
+        .with_client_max_window_bits(Some(15)) // Request maximum compression window
+        .with_server_max_window_bits(Some(15)) // Accept server maximum compression window
+        .with_client_no_context_takeover(false) // Allow client context takeover for better compression
+        .with_server_no_context_takeover(false); // Allow server context takeover for better compression
+
+    info!("📊 Client Compression Configuration:");
+    info!("   - Enabled: {}", compression_config.enabled);
+    info!("   - Level: {} (0=fastest, 9=best compression)", compression_config.level);
+    info!("   - Client max window bits: {:?}", compression_config.client_max_window_bits);
+    info!("   - Server max window bits: {:?}", compression_config.server_max_window_bits);
+    info!("   - Client no context takeover: {}", compression_config.client_no_context_takeover);
+    info!("   - Server no context takeover: {}", compression_config.server_no_context_takeover);
+    info!("📝 Note: Actual compression requires tungstenite library support (negotiation ready)");
+
     let mut client = WebSocketClient::builder()
         .with_connection_timeout(Duration::from_secs(10)) // Set connection timeout
         .with_auto_reconnect(true) // Enable auto-reconnection
@@ -21,6 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "ocpp2.0.1".to_string(),
             "ocpp1.6".to_string()
         ]) // OCPP protocol versions as per OCPP 2.1 specification
+        .with_compression(compression_config) // Enable RFC 7692 permessage-deflate compression
         .build();
 
     // Test different OCPP and WebSocket scenarios

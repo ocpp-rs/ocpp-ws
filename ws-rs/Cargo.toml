@@ -17,21 +17,29 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-tokio = { version = "1.36.0", features = ["full"] }
-tokio-tungstenite = { version = "0.21.0", features = [
+tokio = { version = "1.45.1", features = ["full"] }
+tokio-tungstenite = { version = "0.26.0", features = [
     "rustls-tls-webpki-roots",
 ] }
-tokio-rustls = "0.25.0"
+tokio-rustls = "0.26.0"
 futures-util = "0.3.30"
-rustls = "0.22.2"
+rustls = "0.23.0"
 rustls-pemfile = "2.1.0"
 log = "0.4.20"
 env_logger = "0.11.2"
 url = "2.5.0"
 base64 = "0.22.1"
 percent-encoding = "2.3.1"
+http = "1.0"
+rand = "0.8"
+# For WebSocket compression support (RFC 7692) - currently a placeholder
+# Note: tungstenite doesn't have built-in compression support yet
+# This is prepared for future compression support when it becomes available
+flate2 = { version = "1.0", optional = true }
 
 [features]
 default = []
 client = []
 server = []
+# WebSocket compression support (RFC 7692 permessage-deflate)
+compression = ["flate2"]

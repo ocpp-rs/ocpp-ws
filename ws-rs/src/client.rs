@@ -15,6 +15,7 @@ use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{Connector, connect_async_tls_with_config};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
 use url::Url;
 
 /// WebSocket client structure for handling secure WebSocket connections.
@@ -96,6 +97,8 @@ pub struct WSClientConfig {
     pub reconnect_delay: Duration,
     /// WebSocket subprotocols to request (e.g., ["ocpp2.1", "ocpp2.0.1", "ocpp1.6"])
     pub subprotocols: Vec<String>,
+    /// WebSocket compression configuration (RFC 7692)
+    pub compression: crate::compression::CompressionConfig,
 }
 
 impl Default for WSClientConfig {
@@ -107,6 +110,7 @@ impl Default for WSClientConfig {
             max_reconnect_attempts: 5,
             reconnect_delay: Duration::from_secs(2),
             subprotocols: Vec::new(),
+            compression: crate::compression::CompressionConfig::default(),
         }
     }
 }
@@ -170,6 +174,19 @@ impl WebSocketClientBuilder {
     /// Add a single subprotocol
     pub fn with_subprotocol(mut self, subprotocol: String) -> Self {
         self.config.subprotocols.push(subprotocol);
+        self
+    }
+
+    /// Set compression configuration
+    ///
+    /// # Example
+    /// ```ignore
+    /// let client = WebSocketClient::builder()
+    ///     .with_compression(CompressionConfig::new().with_enabled(true).with_level(6))
+    ///     .build();
+    /// ```
+    pub fn with_compression(mut self, compression: crate::compression::CompressionConfig) -> Self {
+        self.config.compression = compression;
         self
     }
 
@@ -463,8 +480,8 @@ impl WebSocketClient {
             info!("Subprotocols configured: {:?}", self.config.subprotocols);
         }
 
-        // Create WebSocket request with subprotocol headers
-        let mut request = server_url.clone().into_client_request()?;
+        // Create WebSocket request with proper headers
+        let mut request = server_url.as_str().into_client_request()?;
 
         // Add subprotocol header if configured
         if !self.config.subprotocols.is_empty() {
@@ -474,6 +491,18 @@ impl WebSocketClient {
                 protocols.parse().map_err(|e| format!("Invalid subprotocol header: {}", e))?
             );
             info!("Added Sec-WebSocket-Protocol header: {}", protocols);
+        }
+
+        // Add compression extension header if enabled
+        if self.config.compression.enabled {
+            let compression_offer = self.generate_compression_offer();
+            if let Some(offer) = compression_offer {
+                request.headers_mut().insert(
+                    "sec-websocket-extensions",
+                    offer.parse().map_err(|e| format!("Invalid compression header: {}", e))?
+                );
+                info!("Added Sec-WebSocket-Extensions header: {}", offer);
+            }
         }
 
         // Use timeout for connection attempt
@@ -490,6 +519,16 @@ impl WebSocketClient {
                             }
                         } else if !self.config.subprotocols.is_empty() {
                             info!("Server did not select any subprotocol");
+                        }
+
+                        // Check if server accepted compression
+                        if let Some(extensions_header) = response.headers().get("sec-websocket-extensions") {
+                            if let Ok(extensions_str) = extensions_header.to_str() {
+                                info!("Server accepted extensions: {}", extensions_str);
+                                // TODO: Parse and validate compression parameters
+                            }
+                        } else if self.config.compression.enabled {
+                            info!("Server did not accept compression");
                         }
                         stream
                     }
@@ -560,8 +599,8 @@ impl WebSocketClient {
         let send_task = tokio::spawn(async move {
             while let Some(message) = rx_sender.recv().await {
                 let ws_message = match message {
-                    MessageType::Text(text) => Message::Text(text),
-                    MessageType::Binary(data) => Message::Binary(data),
+                    MessageType::Text(text) => Message::Text(text.into()),
+                    MessageType::Binary(data) => Message::Binary(data.into()),
                 };
 
                 match ws_sender.send(ws_message).await {
@@ -584,11 +623,11 @@ impl WebSocketClient {
                         let message = match msg {
                             Message::Text(text) => {
                                 info!("Received text message: {} bytes", text.len());
-                                MessageType::Text(text)
+                                MessageType::Text(text.to_string())
                             }
                             Message::Binary(data) => {
                                 info!("Received binary message: {} bytes", data.len());
-                                MessageType::Binary(data)
+                                MessageType::Binary(data.to_vec())
                             }
                             Message::Ping(_) | Message::Pong(_) => {
                                 // Handle ping/pong internally
@@ -766,6 +805,52 @@ impl WebSocketClient {
     /// `true` if connected, `false` otherwise.
     pub fn is_connected(&self) -> bool {
         self.is_connected
+    }
+
+    /// Generate compression offer for client handshake
+    ///
+    /// Creates a permessage-deflate extension offer according to RFC 7692
+    /// based on the client's compression configuration.
+    ///
+    /// # Returns
+    ///
+    /// An optional string containing the compression extension offer
+    fn generate_compression_offer(&self) -> Option<String> {
+        if !self.config.compression.enabled {
+            return None;
+        }
+
+        let mut params = Vec::new();
+
+        // Add server_max_window_bits if specified
+        if let Some(bits) = self.config.compression.server_max_window_bits {
+            params.push(format!("server_max_window_bits={}", bits));
+        }
+
+        // Add client_max_window_bits if specified
+        if let Some(bits) = self.config.compression.client_max_window_bits {
+            params.push(format!("client_max_window_bits={}", bits));
+        } else {
+            // Request client_max_window_bits without value (let server decide)
+            params.push("client_max_window_bits".to_string());
+        }
+
+        // Add no context takeover parameters
+        if self.config.compression.server_no_context_takeover {
+            params.push("server_no_context_takeover".to_string());
+        }
+
+        if self.config.compression.client_no_context_takeover {
+            params.push("client_no_context_takeover".to_string());
+        }
+
+        let offer = if params.is_empty() {
+            "permessage-deflate".to_string()
+        } else {
+            format!("permessage-deflate; {}", params.join("; "))
+        };
+
+        Some(offer)
     }
 
     /// Closes the WebSocket connection.

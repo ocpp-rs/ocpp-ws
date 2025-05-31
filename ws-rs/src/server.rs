@@ -16,6 +16,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::accept_hdr_async;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response, ErrorResponse};
 use crate::path_utils::PathInfo;
+use crate::compression::CompressionConfig;
 
 /// Message type for communication with WebSocket clients
 #[derive(Debug, Clone)]
@@ -31,8 +32,8 @@ pub enum WsMessage {
 impl From<Message> for WsMessage {
     fn from(msg: Message) -> Self {
         match msg {
-            Message::Text(text) => WsMessage::Text(text),
-            Message::Binary(data) => WsMessage::Binary(data),
+            Message::Text(text) => WsMessage::Text(text.to_string()),
+            Message::Binary(data) => WsMessage::Binary(data.to_vec()),
             Message::Close(_) => WsMessage::Close,
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
                 // These are handled internally by the WebSocket implementation
@@ -45,8 +46,8 @@ impl From<Message> for WsMessage {
 impl From<WsMessage> for Message {
     fn from(msg: WsMessage) -> Self {
         match msg {
-            WsMessage::Text(text) => Message::Text(text),
-            WsMessage::Binary(data) => Message::Binary(data),
+            WsMessage::Text(text) => Message::Text(text.into()),
+            WsMessage::Binary(data) => Message::Binary(data.into()),
             WsMessage::Close => Message::Close(None),
         }
     }
@@ -73,6 +74,8 @@ pub struct WsServerConfig {
     pub connection_timeout: u64,
     /// Enable client certificate verification
     pub client_cert_required: bool,
+    /// WebSocket compression configuration (RFC 7692)
+    pub compression: CompressionConfig,
 }
 
 impl Default for WsServerConfig {
@@ -85,6 +88,7 @@ impl Default for WsServerConfig {
             max_connections: 1000,
             connection_timeout: 30,
             client_cert_required: true,
+            compression: CompressionConfig::default(),
         }
     }
 }
@@ -476,6 +480,36 @@ impl WsServer {
                 let _ = subprotocol_clone.set(None);
             }
 
+            // Handle compression extension negotiation (RFC 7692)
+            if self.config.compression.enabled {
+                if let Some(extensions_header) = request.headers().get("sec-websocket-extensions") {
+                    if let Ok(extensions_str) = extensions_header.to_str() {
+                        debug!("Client requested extensions: {}", extensions_str);
+
+                        // Parse extensions and look for permessage-deflate
+                        let extensions = crate::compression::parse_extensions(extensions_str);
+                        for extension in extensions {
+                            if extension.name == "permessage-deflate" {
+                                info!("Client supports permessage-deflate compression");
+
+                                // Generate server response for compression
+                                let compression_response = WsServer::generate_compression_response(&self.config.compression, &extension);
+                                if let Some(response_ext) = compression_response {
+                                    response.headers_mut().insert(
+                                        "sec-websocket-extensions",
+                                        response_ext.parse().unwrap()
+                                    );
+                                    info!("Compression negotiated: {}", response_ext);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    debug!("No compression extensions requested by client");
+                }
+            }
+
             Ok(response)
         };
 
@@ -634,6 +668,62 @@ impl WsServer {
                       removed_interface.addr());
             }
         });
+    }
+
+    /// Generate compression response for server handshake
+    ///
+    /// Creates a permessage-deflate extension response based on the server's
+    /// compression configuration and the client's offer.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Server compression configuration
+    /// * `client_extension` - Client's compression extension offer
+    ///
+    /// # Returns
+    ///
+    /// An optional string containing the compression extension response
+    fn generate_compression_response(
+        config: &CompressionConfig,
+        client_extension: &crate::compression::Extension,
+    ) -> Option<String> {
+        if !config.enabled || client_extension.name != "permessage-deflate" {
+            return None;
+        }
+
+        let mut params = Vec::new();
+
+        // Handle server_max_window_bits
+        if let Some(bits) = config.server_max_window_bits {
+            params.push(format!("server_max_window_bits={}", bits));
+        }
+
+        // Handle client_max_window_bits
+        if client_extension.has_param("client_max_window_bits") {
+            if let Some(bits) = config.client_max_window_bits {
+                params.push(format!("client_max_window_bits={}", bits));
+            } else {
+                // Client requested it, but we don't specify a value (use default)
+                params.push("client_max_window_bits=15".to_string());
+            }
+        }
+
+        // Handle no context takeover parameters
+        if config.server_no_context_takeover {
+            params.push("server_no_context_takeover".to_string());
+        }
+
+        if client_extension.has_param("client_no_context_takeover") || config.client_no_context_takeover {
+            params.push("client_no_context_takeover".to_string());
+        }
+
+        let response = if params.is_empty() {
+            "permessage-deflate".to_string()
+        } else {
+            format!("permessage-deflate; {}", params.join("; "))
+        };
+
+        Some(response)
     }
 
     /// Create a TLS acceptor from the server configuration
